@@ -1,1 +1,6 @@
-Network protocols are the backbone of the internet, ensuring that data packets travel reliably from source to destination. In this assignment, we simulate the behavior of a reliable transport layer over a standard TCP connection. By implementing a sliding window mechanism, we allow multiple unacknowledged packets to be in flight simultaneously, which improves throughput compared to a stop-and-wait approach. When the server receives packets, it sends back cumulative acknowledgments, indicating the next expected sequence number. If a packet is lost or delayed, the client's timeout mechanism triggers a retransmission of the window, ensuring data integrity. This process mimics TCP's reliability features in a simplified application-layer protocol.
+Network protocols are the backbone of the internet, ensuring that data packets travel reliably from source to destination.
+In this assignment, we simulate the behavior of a reliable transport layer over a standard TCP connection.
+By implementing a sliding window mechanism, we allow multiple unacknowledged packets to be in flight simultaneously, which improves throughput compared to a stop-and-wait approach.
+When the server receives packets, it sends back cumulative acknowledgments, indicating the next expected sequence number.
+If a packet is lost or delayed, the client's timeout mechanism triggers a retransmission of the window, ensuring data integrity.
+This process mimics TCP's reliability features in a simplified application-layer protocol.

@@ -3,165 +3,119 @@ import time
 import threading
 
 
-# פונקציה לקריאת קובץ הקונפיגורציה
 def get_config():
+    print("\n--- Client Configuration ---")
+    choice = input("Enter '1' for input.txt or '2' for manual input: ")
     config = {}
-    try:
-        with open('config.txt', 'r') as f:
-            for line in f:
-                if ':' in line:
-                    key, val = line.strip().split(':', 1)
-                    val = val.strip().replace('"', '')
-                    if val.isdigit():
-                        val = int(val)
-                    elif val.lower() == 'true':
-                        val = True
-                    elif val.lower() == 'false':
-                        val = False
-                    config[key] = val
-    except FileNotFoundError:
-        print("Config file not found.")
+    if choice == '1':
+        try:
+            with open('config.txt', 'r') as f:
+                for line in f:
+                    if ':' in line:
+                        k, v = line.strip().split(':', 1)
+                        config[k.lower().replace(' ', '_')] = v.strip().replace('"', '')
+        except:
+            choice = '2'
+
+    if choice == '2':
+        config['message'] = input("Path to input file: ")
+        config['window_size'] = int(input("Window size: "))
+        config['timeout'] = float(input("Timeout (sec): "))
+    else:
+        config['window_size'] = int(config.get('window_size', 5))
+        config['timeout'] = float(config.get('timeout', 3))
     return config
 
 
 def start_client():
     config = get_config()
-
-    file_path = config.get('message', 'input.txt')
-    window_size = config.get('window_size', 5)
-    timeout_val = config.get('timeout', 3)
-
-    # קריאת הקובץ שיש לשלוח
     try:
-        with open(file_path, 'r') as f:
+        with open(config['message'], 'r') as f:
             full_data = f.read()
-    except Exception as e:
-        print(f"[Client] Error reading input file: {e}")
+    except:
+        print("Error: Input file not found.")
         return
 
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        client_socket.connect(('127.0.0.1', 12345))
+        client_socket.connect(('127.0.0.1', 5555))
+        print("[Client] Connected to server.")
     except:
-        print("[Client] Ensure server is running first.")
+        print("[Client] Connection failed.")
         return
 
-    print("[Client] Connected to server.")
-
-    # --- שלב 1: לחיצת יד ---
-    print("[Client] Sending SIN...")
+    # Handshake
     client_socket.send("SIN".encode())
-
     resp = client_socket.recv(1024).decode()
-    if resp.strip() == "SIN/ACK":
-        print("[Client] Received SIN/ACK. Sending ACK...")
+    if "SIN/ACK" in resp:
+        print("[Client] Received SIN/ACK. Completing handshake...")
         client_socket.send("ACK".encode())
-    else:
-        print("[Client] Handshake failed.")
-        return
+        time.sleep(0.1)  # השהייה קלה למניעת הדבקת חבילות
+        client_socket.send("REQ_MAX_SIZE".encode())
 
-    # --- שלב 2: בקשת גודל הודעה ---
-    client_socket.send("REQ_MAX_SIZE".encode())
-    resp = client_socket.recv(1024).decode()
+    size_data = client_socket.recv(1024).decode()
+    # ניקוי במקרה שקיבלנו שאריות של SIN/ACK בטעות
+    if "SIN/ACK" in size_data:
+        size_data = size_data.replace("SIN/ACK", "")
 
-    if "|" in resp:
-        max_msg_size = int(resp.split("|")[0])
-    else:
-        max_msg_size = int(resp)
+    curr_max_size = int(size_data.split("|")[0])
+    print(f"[Client] Negotiated Max Size: {curr_max_size} bytes")
 
-    print(f"[Client] Negotiated Max Size: {max_msg_size} bytes")
-
-    # --- חלוקה למקטעים ---
+    base = 0
+    next_seq = 0
     packets = []
-    for i in range(0, len(full_data), max_msg_size):
-        chunk = full_data[i:i + max_msg_size]
-        packets.append(chunk)
-
-    total_packets = len(packets)
-    print(f"[Client] Total packets to send: {total_packets}")
-
-    # --- ניהול חלון גלישה ---
-    base = 0  # המספר הסידורי של ההודעה הכי ישנה שלא אושרה
-    next_seq_num = 0
-
+    data_ptr = 0
     lock = threading.Lock()
-    timer_start_time = None
+    timer_start = None
     running = True
 
-    # תהליך נפרד לקבלת ACKs מהשרת
     def receive_acks():
-        nonlocal base, running, timer_start_time
+        nonlocal base, timer_start, running, curr_max_size
         while running:
             try:
-                ack_data = client_socket.recv(1024).decode()
-                if not ack_data: break
-
-                if "ACK:" in ack_data:
-                    # ייתכן שיתקבלו כמה ACKs, ניקח את האחרון הרלוונטי
-                    parts = ack_data.split("ACK:")
-                    last_ack_val = -1
-                    for p in parts:
-                        if not p: continue
-                        # ניקוי זבל אם יש
-                        val_str = p.split("|")[0].strip()
-                        if val_str.isdigit():
-                            last_ack_val = int(val_str)
-
-                    if last_ack_val != -1:
+                data = client_socket.recv(1024).decode()
+                if not data: break
+                if "ACK:" in data:
+                    # טיפול במקרה של כמה ACKs שנדבקו
+                    for part in data.split("ACK:"):
+                        if not part: continue
+                        ack_val = int(part.split("|")[0])
                         with lock:
-                            print(f"[Client] Got ACK{last_ack_val}")
-                            # אם קיבלנו ACK X, זה אומר שהודעות עד X (כולל) התקבלו.
-                            # אז החלון צריך להתקדם ל-X+1
-                            if last_ack_val >= base - 1:  # -1 כי ה-base הוא האינדקס הבא לשליחה/אישור
-                                # אם last_ack_val הוא 0, זה אומר שקיבלנו את 0. ה-base צריך להיות 1.
-                                new_base = last_ack_val + 1
-                                if new_base > base:
-                                    base = new_base
-                                    if base == next_seq_num:
-                                        timer_start_time = None  # אין הודעות לא מאושרות
-                                    else:
-                                        timer_start_time = time.time()  # מתחילים טיימר להודעה הבאה בתור
-
-                    if base >= total_packets:
-                        running = False
-                        break
-            except Exception:
+                            if ack_val >= base:
+                                print(f"[Client] Got ACK:{ack_val}")
+                                base = ack_val + 1
+                                timer_start = time.time() if base < next_seq else None
+                            if "MAX_SIZE:" in part:
+                                curr_max_size = int(part.split("MAX_SIZE:")[1])
+            except:
                 break
 
-    recv_thread = threading.Thread(target=receive_acks)
-    recv_thread.start()
+    threading.Thread(target=receive_acks, daemon=True).start()
 
-    # --- לולאת השליחה ---
-    while base < total_packets and running:
-
+    while base < (len(full_data) / 10) or data_ptr < len(full_data):
         with lock:
-            # שליחת הודעות כל עוד החלון לא מלא
-            while next_seq_num < base + window_size and next_seq_num < total_packets:
-                payload = packets[next_seq_num]
-                msg = f"MSG:{next_seq_num}|{payload}"
+            while next_seq < base + config['window_size'] and data_ptr < len(full_data):
+                chunk = full_data[data_ptr: data_ptr + curr_max_size]
+                packets.append(chunk)
+                msg = f"MSG:{next_seq}|{chunk}"
                 client_socket.send(msg.encode())
-                print(f"[Client] Sent M{next_seq_num}")
+                print(f"[Client] Sent M{next_seq} (Size: {len(chunk)})")
+                if base == next_seq: timer_start = time.time()
+                next_seq += 1
+                data_ptr += len(chunk)
 
-                if base == next_seq_num:
-                    timer_start_time = time.time()  # התחלת טיימר להודעה הראשונה בחלון
-
-                next_seq_num += 1
-
-        # בדיקת Timeout
-        with lock:
-            if timer_start_time and (time.time() - timer_start_time > timeout_val):
-                print("[Client] Timeout! Retransmitting window...")
-                # במקרה של Timeout, חוזרים אחורה ל-base ושולחים הכל שוב
-                next_seq_num = base
-                timer_start_time = time.time()
+            if timer_start and (time.time() - timer_start > config['timeout']):
+                print(f"[Client] Timeout! Retransmitting from M{base}")
+                for i in range(base, next_seq):
+                    client_socket.send(f"MSG:{i}|{packets[i]}".encode())
+                timer_start = time.time()
 
         time.sleep(0.1)
+        if base >= len(packets) and data_ptr >= len(full_data): break
 
+    print("[Client] Transfer Complete.")
     running = False
     client_socket.close()
-    if recv_thread.is_alive():
-        recv_thread.join(timeout=1)
-    print("[Client] Finished sending file.")
 
 
 if __name__ == "__main__":

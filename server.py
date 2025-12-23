@@ -1,106 +1,105 @@
 import socket
 
 
-def start_server(config_file='config.txt'):
-    # הגדרות ברירת מחדל לשרת (במטלה הערכים נקבעים בעיקר ע"י הלקוח או קובץ, כאן נגדיר קבועים לשם הדוגמה)
-    MAX_MSG_SIZE_SERVER = 100
-    DYNAMIC_SIZE = False
+def get_config():
+    print("\n--- Server Configuration ---")
+    choice = input("Enter '1' to read from config.txt or '2' for manual input: ")
+    config = {}
+    if choice == '1':
+        try:
+            with open('config.txt', 'r') as f:
+                for line in f:
+                    if ':' in line:
+                        key, val = line.strip().split(':', 1)
+                        config[key.lower().replace(' ', '_')] = val.strip().replace('"', '')
+        except:
+            choice = '2'
+
+    if choice == '2':
+        config['maximum_msg_size'] = input("Enter Maximum Message Size: ")
+        config['dynamic_message_size'] = input("Dynamic Message Size? (True/False): ")
+
+    config['maximum_msg_size'] = int(config.get('maximum_msg_size', 100))
+    config['is_dynamic'] = str(config.get('dynamic_message_size', 'False')).lower() == 'true'
+    return config
+
+
+def start_server():
+    config = get_config()
+    max_size = config['maximum_msg_size']
+    is_dynamic = config['is_dynamic']
+    server_port = 5555
 
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_port = 12345
-    server_socket.bind(('0.0.0.0', server_port))
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_socket.bind(('0.0.0.0', 5555))
     server_socket.listen(1)
-
-    print(f"[Server] Listening on port {server_port}...")
-
+    print(f"\n[Server] Listening on port {server_port} (Max Size: {max_size}, Dynamic: {is_dynamic})...")
     conn, addr = server_socket.accept()
-    print(f"[Server] Connection from {addr}")
+    print(f"[Server] Connected to {addr}")
 
-    # --- שלב 1: לחיצת יד (Handshake) ---
-    data = conn.recv(1024).decode()
-    if data.strip() == "SIN":
-        print("[Server] Received SIN, sending SIN/ACK")
-        conn.send("SIN/ACK".encode())
-    else:
-        print("[Server] Handshake failed: Did not receive SIN")
-        conn.close()
-        return
+    buffer = ""
+    sin_ack_sent = False
 
-    data = conn.recv(1024).decode()
-    if data.strip() == "ACK":
-        print("[Server] Received ACK. Connection Established.")
-    else:
-        print("[Server] Handshake failed: Did not receive ACK")
-        conn.close()
-        return
+    while True:
+        data = conn.recv(1024).decode()
+        if not data: break
+        buffer += data
 
-    # --- שלב 2: משא ומתן על גודל הודעה ---
-    data = conn.recv(1024).decode()
-    if "REQ_MAX_SIZE" in data:
-        # שליחת הגודל המקסימלי שהשרת תומך בו
-        response = f"{MAX_MSG_SIZE_SERVER}"
-        if DYNAMIC_SIZE:
-            response += "|DYN=True"
-        conn.send(response.encode())
-        print(f"[Server] Sent max size: {MAX_MSG_SIZE_SERVER}")
+        if "SIN" in buffer and not sin_ack_sent:
+            conn.send("SIN/ACK".encode())
+            sin_ack_sent = True
+            buffer = buffer.replace("SIN", "")
 
-    # --- שלב 3: קבלת המידע ---
-    received_msgs = {}  # מילון לשמירת הודעות: {מספר סידורי: תוכן}
-    expected_seq = 0  # המספר הסידורי הבא שאנו מצפים לו ברצף
+        if "ACK" in buffer and "REQ_MAX_SIZE" in buffer:
+            resp = f"{max_size}"
+            if is_dynamic: resp += "|DYN=True"
+            conn.send(resp.encode())
+            buffer = ""
+            break
+
+    received_msgs = {}
+    expected_seq = 0
 
     while True:
         try:
             data = conn.recv(4096).decode()
-            if not data:
-                break
+            if not data: break
+            buffer += data
 
-            # הנחה: הפורמט הוא "MSG:<seq>|<payload>"
-            # ב-TCP ייתכן שנקבל כמה הודעות מחוברות, כאן נניח לצורך הפשטות שהן מגיעות בנפרד או נטפל באחת
-            if data.startswith("MSG:"):
-                # במקרה של מספר הודעות באותו באפר, ניקח רק את הראשונה לצורך הדגמה פשוטה
-                # (במימוש מלא יש לפצל לפי דלימיטר)
-                msg_parts = data.split("MSG:")
-                for part in msg_parts:
-                    if not part: continue
+            while "MSG:" in buffer:
+                parts = buffer.split("MSG:", 2)
+                if len(parts) < 2: break
+                msg_content = parts[1]
+                if "|" not in msg_content: break
 
-                    if "|" in part:
-                        header, content = part.split("|", 1)
-                        seq_num = int(header)
+                buffer = "MSG:" + parts[2] if len(parts) > 2 else ""
 
-                        print(f"[Server] Received Message M{seq_num}")
+                header, content = msg_content.split("|", 1)
+                seq_num = int(header)
+                print(f"[Server] Received M{seq_num}")
+                received_msgs[seq_num] = content
 
-                        # שמירת ההודעה
-                        received_msgs[seq_num] = content
+                while expected_seq in received_msgs:
+                    expected_seq += 1
 
-                        # חישוב ה-ACK המצטבר (הכי גבוה ברצף)
-                        temp_seq = expected_seq
-                        while temp_seq in received_msgs:
-                            temp_seq += 1
+                ack_num = expected_seq - 1
+                ack_msg = f"ACK:{ack_num}"
 
-                        # ה-ACK הוא על האחרון שהתקבל תקין ברצף (temp_seq - 1)
-                        # אבל הפרוטוקול המקובל במטלה: ACK מציין מה קיבלנו עד כה
-                        ack_num = temp_seq - 1
+                # כאן הגודל נשאר קבוע לפי מה שהגדרת בהתחלה
+                if is_dynamic:
+                    if ack_num >= 5:
+                        max_size = 25
+                    ack_msg += f"|MAX_SIZE:{max_size}"
 
-                        # עדכון הציפייה
-                        expected_seq = temp_seq
-
-                        ack_response = f"ACK:{ack_num}"
-                        conn.send(ack_response.encode())
-                        print(f"[Server] Sent {ack_response}")
-
-        except Exception as e:
-            print(f"[Server] Error: {e}")
+                conn.send(ack_msg.encode())
+                print(f"[Server] Sent {ack_msg}")
+        except:
             break
 
-    conn.close()
-
-    # הדפסת הקובץ המלא בסוף
-    full_text = ""
-    for i in sorted(received_msgs.keys()):
-        full_text += received_msgs[i]
     print("\n--- Full Message Received ---")
-    print(full_text)
-    print("-----------------------------")
+    print("".join(received_msgs[i] for i in sorted(received_msgs.keys())))
+    conn.close()
 
 
 if __name__ == "__main__":
