@@ -1,0 +1,7 @@
+Paragraph from Wikipedia:
+The pawn is the last piece in the hierarchy of strength and the most limited in its movement.
+Each player starts the game with eight pawns, arranged in the penultimate rows – the second and seventh, each side in the row closest to him.
+The pawn can only move one step forward to the square in front of it.
+Because of this, the pawn often gets stuck when the square in front of it is occupied by another piece.
+The pawn hits other pieces in a different way from its own way of walking, it hits one square diagonally in the direction of its progress, so that in fact at any given moment it threatens one or two squares.
+The pawn has several special abilities: on its first move it can take a double step, when it reaches the last row it is crowned with another piece and it has the ability to hit another pawn in a special way – hitting through its gait.
